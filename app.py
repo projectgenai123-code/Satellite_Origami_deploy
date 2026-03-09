@@ -1,5 +1,6 @@
 """
 app.py — Satellite Origami Backend (Production Ready for Render)
+CORS fully fixed — works for all users worldwide
 """
 
 import os, io, base64, warnings
@@ -12,13 +13,26 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from rag_pipeline import RAGPipeline
 
 app = Flask(__name__)
-CORS(app)
 
+# ── CORS — allow ALL origins (fixes "backend offline" for all users) ──────────
+CORS(app, resources={r"/*": {"origins": "*"}},
+     supports_credentials=False,
+     allow_headers=["Content-Type"],
+     methods=["GET","POST","OPTIONS"])
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
 BASE           = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH     = os.path.join(BASE, "cvae_model.pth")
 KNOWLEDGE_PATH = os.path.join(BASE, "knowledge_base.json")
@@ -304,26 +318,32 @@ def build_satellite_3d(config):
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
-@app.route("/api/health",methods=["GET"])
+@app.route("/api/health", methods=["GET","OPTIONS"])
 def health():
     return jsonify({"status":"ok","message":"Satellite Origami Backend Running"})
 
-@app.route("/api/generate",methods=["POST"])
+@app.route("/api/generate", methods=["POST","OPTIONS"])
 def generate():
+    if request.method == "OPTIONS":
+        return "", 204
     data=request.json
     cfg={"solar_panel":data.get("solar_panel",2),"antenna":data.get("antenna",1),
          "reflector":data.get("reflector",1),"truss":data.get("truss",1)}
     return jsonify({"image":render_satellite_png(cfg),"config":cfg,"status":"generated"})
 
-@app.route("/api/generate3d",methods=["POST"])
+@app.route("/api/generate3d", methods=["POST","OPTIONS"])
 def generate3d():
+    if request.method == "OPTIONS":
+        return "", 204
     data=request.json
     cfg={"solar_panel":data.get("solar_panel",2),"antenna":data.get("antenna",1),
          "reflector":data.get("reflector",1),"truss":data.get("truss",1)}
     return jsonify({"meshes":build_satellite_3d(cfg),"config":cfg,"status":"ok"})
 
-@app.route("/api/chat",methods=["POST"])
+@app.route("/api/chat", methods=["POST","OPTIONS"])
 def chat():
+    if request.method == "OPTIONS":
+        return "", 204
     data=request.json
     message=data.get("message","").strip()
     answer,sources=rag.answer(message)
@@ -335,10 +355,11 @@ def index():
     return send_file(FRONTEND_PATH)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# START — Render.com production
+# START
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("\nSatellite Origami Backend — Production")
-    print("Routes: /  |  /api/generate  |  /api/generate3d  |  /api/chat  |  /api/health")
+    print("\nSatellite Origami Backend — Production (Render)")
+    print("CORS: ALL origins allowed")
+    print("Routes: /  |  /api/health  |  /api/generate  |  /api/generate3d  |  /api/chat")
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
