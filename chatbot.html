@@ -615,7 +615,7 @@ function loginAs(name){
    STATE  (exact from step10_front)
 ══════════════════════════════════════════════════════════════ */
 // API base URL — Flask serves this page so same origin always works
-const API = 'https://satellite-origami-model.onrender.com';
+const API = window.location.origin;
 const cfg={solar_panel:2,antenna:1,reflector:1,truss:1};
 let currentTab='png';
 
@@ -906,3 +906,4 @@ window.addEventListener('resize',()=>{
 </body>
 
 </html>
+
