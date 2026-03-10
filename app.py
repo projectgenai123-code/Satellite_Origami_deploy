@@ -248,6 +248,20 @@ def build_truss(n_segments=1):
 # ══════════════════════════════════════════════════════════════════════════════
 # PNG RENDER — STANDING satellite, front view shows origami folds clearly
 # ══════════════════════════════════════════════════════════════════════════════
+def _draw_poly(ax, v, f, fc, alpha):
+    if not f: return
+    ax.add_collection3d(Poly3DCollection([[v[vi] for vi in face] for face in f],
+        alpha=alpha, facecolor=fc, edgecolor="#00b4ff", linewidth=0.2))
+
+def _draw_folds(ax, folds, color, ls="-", lw=0.9):
+    for f in folds:
+        ax.plot([f[0][0],f[1][0]], [f[0][1],f[1][1]], [f[0][2],f[1][2]],
+                color=color, lw=lw, ls=ls, alpha=0.95)
+
+def _draw_rod(ax, p0, p1, color="#ffffff", lw=3):
+    ax.plot([p0[0],p1[0]], [p0[1],p1[1]], [p0[2],p1[2]],
+            color=color, lw=lw, alpha=1.0, solid_capstyle="round", zorder=10)
+
 def render_satellite_png(config):
     ns=int(config.get("solar_panel",2)); na=int(config.get("antenna",1))
     nr=int(config.get("reflector",1));   nt=int(config.get("truss",1))
@@ -268,48 +282,47 @@ def render_satellite_png(config):
         ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([]); ax.grid(False)
         ax.set_title(title,fontsize=10,fontweight="bold",color="#00dcff",fontfamily="monospace",pad=8)
 
-        def poly(v,f,fc,alpha):
-            if not f: return
-            ax.add_collection3d(Poly3DCollection([[v[vi] for vi in face] for face in f],
-                alpha=alpha,facecolor=fc,edgecolor="#00b4ff",linewidth=0.2))
-
-        def fl(folds,color,ls="-",lw=0.9):
-            for f in folds:
-                ax.plot([f[0][0],f[1][0]],[f[0][1],f[1][1]],[f[0][2],f[1][2]],
-                        color=color,lw=lw,ls=ls,alpha=0.95)
-
-        def rod(p0,p1,color="#ffffff",lw=3):
-            ax.plot([p0[0],p1[0]],[p0[1],p1[1]],[p0[2],p1[2]],
-                    color=color,lw=lw,alpha=1.0,solid_capstyle="round",zorder=10)
-
-        # Draw truss (spine inside body)
+        # Draw truss (vertical spine inside body)
         tv,tf,tmf,tvf=build_truss(nt)
-        poly(tv,tf,"#cc8800",0.4); fl(tmf,"#ffcc44",lw=0.6); fl(tvf,"#ffaa00","--",lw=0.5)
+        _draw_poly(ax,tv,tf,"#cc8800",0.4)
+        _draw_folds(ax,tmf,"#ffcc44",lw=0.6)
+        _draw_folds(ax,tvf,"#ffaa00","--",lw=0.5)
 
         # Draw body
         bv,bf,bfolds=build_body()
-        poly(bv,bf,"#1a3055",0.75); fl(bfolds,"#00dcff",lw=1.2)
+        _draw_poly(ax,bv,bf,"#1a3055",0.75)
+        _draw_folds(ax,bfolds,"#00dcff",lw=1.2)
 
-        # Draw solar panels
+        # Draw solar panels (wings left/right)
         lc=(ns+1)//2; rc=ns//2
         for i in range(lc):
             sv,sf,smf,svf,_,_=build_solar_panel(-1,i,lc)
-            poly(sv,sf,"#1144aa",0.75); fl(smf,"#00dcff","-",1.4); fl(svf,"#00ffcc","--",0.9)
+            _draw_poly(ax,sv,sf,"#1144aa",0.75)
+            _draw_folds(ax,smf,"#00dcff","-",1.4)
+            _draw_folds(ax,svf,"#00ffcc","--",0.9)
         for i in range(rc):
             sv,sf,smf,svf,_,_=build_solar_panel(+1,i,rc)
-            poly(sv,sf,"#1144aa",0.75); fl(smf,"#00dcff","-",1.4); fl(svf,"#00ffcc","--",0.9)
+            _draw_poly(ax,sv,sf,"#1144aa",0.75)
+            _draw_folds(ax,smf,"#00dcff","-",1.4)
+            _draw_folds(ax,svf,"#00ffcc","--",0.9)
 
-        # Draw antennas
+        # Draw antennas (top of body)
         for i in range(na):
             av,af,amf,avf,mb,mt=build_antenna(i,na)
-            poly(av,af,"#00cc99",0.6); fl(amf,"#00ffcc"); fl(avf,"#aaffee","--"); rod(mb,mt,"#00ffcc",lw=2)
+            _draw_poly(ax,av,af,"#00cc99",0.6)
+            _draw_folds(ax,amf,"#00ffcc")
+            _draw_folds(ax,avf,"#aaffee","--")
+            _draw_rod(ax,mb,mt,"#00ffcc",lw=2)
 
-        # Draw reflectors
+        # Draw reflectors (bottom of body)
         for i in range(nr):
             rv,rf,rmf,rvf,cb,cr=build_reflector(i,nr)
-            poly(rv,rf,"#9944cc",0.6); fl(rmf,"#dd88ff"); fl(rvf,"#cc66ff","--"); rod(cb,cr,"#bb66ff",lw=2)
+            _draw_poly(ax,rv,rf,"#9944cc",0.6)
+            _draw_folds(ax,rmf,"#dd88ff")
+            _draw_folds(ax,rvf,"#cc66ff","--")
+            _draw_rod(ax,cb,cr,"#bb66ff",lw=2)
 
-        # Axis limits for standing satellite
+        # Axis limits — tall standing satellite
         ax.set_xlim(-5, 5)
         ax.set_ylim(-3.5, 3.5)
         ax.set_zlim(-2, 2)
