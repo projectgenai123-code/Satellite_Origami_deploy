@@ -44,10 +44,10 @@ NUM_CLASSES  = 4
 INPUT_DIM    = 140
 LATENT_DIM   = 16
 
-# ── STANDING satellite body (tall, like a real comms satellite) ───────────────
-BODY_X = 0.6   # narrow width
-BODY_Y = 1.8   # TALL height  ← key change
-BODY_Z = 0.6   # narrow depth
+# ── Body dimensions ───────────────────────────────────────────────────────────
+BODY_X = 0.55
+BODY_Y = 1.6
+BODY_Z = 0.55
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CVAE
@@ -108,141 +108,251 @@ def get_seed(part_name):
     return out * X_range + X_min
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GEOMETRY — STANDING orientation
+# GEOMETRY — TRUE ORIGAMI AESTHETIC
+# All shapes use flat angular facets + explicit crease/fold lines
+# like real paper folding: Miura-ori panels, Yoshimura body, waterbomb antenna
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_body():
-    bx,by,bz = BODY_X,BODY_Y,BODY_Z
-    v = np.array([
-        [-bx,-by,-bz],[ bx,-by,-bz],[ bx, by,-bz],[-bx, by,-bz],
-        [-bx,-by, bz],[ bx,-by, bz],[ bx, by, bz],[-bx, by, bz],
-    ])
-    faces = [[0,1,2,3],[4,5,6,7],[0,1,5,4],[2,3,7,6],[1,2,6,5],[0,3,7,4]]
-    # Origami fold lines on the body — horizontal and vertical creases
-    folds = []
-    # Vertical mountain folds on front face
-    for xi in np.linspace(-bx, bx, 5)[1:-1]:
-        folds.append([[xi, -by, bz], [xi, by, bz]])
-    # Horizontal valley folds on front face
-    for yi in np.linspace(-by, by, 7)[1:-1]:
-        folds.append([[-bx, yi, bz], [bx, yi, bz]])
-    # Diagonal folds
-    folds.append([[-bx, -by, bz], [bx, by, bz]])
-    folds.append([[bx, -by, bz], [-bx, by, bz]])
-    return v, faces, folds
+    """Yoshimura-pattern cylindrical body — diamond facet origami tube"""
+    bx, by, bz = BODY_X, BODY_Y, BODY_Z
+    n_rings  = 8   # horizontal rings of diamonds
+    n_sides  = 6   # hexagonal cross-section
+    verts, faces, mfolds, vfolds = [], [], [], []
+
+    # Build diamond-faceted tube (Yoshimura pattern)
+    for ring in range(n_rings + 1):
+        y = -by + ring * (2*by / n_rings)
+        offset = (np.pi / n_sides) * (ring % 2)
+        for s in range(n_sides):
+            angle = 2*np.pi*s/n_sides + offset
+            verts.append([bx*np.cos(angle), y, bz*np.sin(angle)])
+
+    verts = np.array(verts)
+
+    # Quad faces between rings
+    for ring in range(n_rings):
+        for s in range(n_sides):
+            a = ring*n_sides + s
+            b = ring*n_sides + (s+1)%n_sides
+            c = (ring+1)*n_sides + (s+1)%n_sides
+            d = (ring+1)*n_sides + s
+            # Split quad into 2 triangles to get origami diamond facets
+            faces.append([a, b, c])
+            faces.append([a, c, d])
+            # Mountain folds = ring edges
+            mfolds.append([verts[a].tolist(), verts[b].tolist()])
+            # Valley folds = diagonal creases
+            vfolds.append([verts[b].tolist(), verts[d].tolist()])
+
+    # Top and bottom caps (flat polygons)
+    top_y_verts = [ring*n_sides + s for s in range(n_sides) if True]  # last ring
+    # Add centre cap verts
+    top_idx = len(verts); verts = np.vstack([verts, [[0, by, 0]]])
+    bot_idx = len(verts); verts = np.vstack([verts, [[0, -by, 0]]])
+
+    for s in range(n_sides):
+        t0 = n_rings*n_sides + s
+        t1 = n_rings*n_sides + (s+1)%n_sides
+        faces.append([top_idx, t0, t1])
+        mfolds.append([verts[t0].tolist(), verts[t1].tolist()])
+
+        b0 = s
+        b1 = (s+1)%n_sides
+        faces.append([bot_idx, b1, b0])
+        mfolds.append([verts[b0].tolist(), verts[b1].tolist()])
+
+    return verts, faces, mfolds, vfolds
+
 
 def build_solar_panel(side, panel_index=0, n_panels_this_side=1):
-    # Solar panels extend LEFT/RIGHT horizontally, with Miura-ori fold pattern
-    pw  = 2.8   # panel width (X direction)
-    ph  = 0.04  # panel thickness
-    ny  = 6     # fold divisions along Y (height)
-    nx  = 5     # fold divisions along X (width)
+    """Miura-ori solar panel — zigzag accordion fold, clearly angular"""
+    nx = 5    # columns of Miura cells
+    ny = 4    # rows of Miura cells
+    cell_w = 0.55   # width of each cell
+    cell_h = (2*BODY_Y*0.85) / max(n_panels_this_side, 1) / ny
+    shear  = 0.18   # Miura parallelogram shear angle offset
+    fold_z = 0.08   # z-depth of accordion fold
 
-    # Stack panels vertically if multiple
-    panel_height = (2 * BODY_Y * 0.9) / max(n_panels_this_side, 1)
-    y_start = -BODY_Y * 0.9 + panel_index * panel_height
-    y_end   = y_start + panel_height * 0.92
-
-    x_start = BODY_X       if side == 1 else -(BODY_X + pw)
-    x_end   = BODY_X + pw  if side == 1 else -BODY_X
+    x_base = BODY_X * side
+    y_base = -BODY_Y*0.85 + panel_index * (ny * cell_h)
 
     verts = []
-    for xi in np.linspace(x_start, x_end, nx+1):
-        for yi in np.linspace(y_start, y_end, ny+1):
-            # Miura-ori zigzag in Z
-            z_offset = ph * (0.5 if (int((xi - x_start) / (pw/nx)) + int((yi - y_start) / (panel_height/ny))) % 2 == 0 else -0.5)
-            verts.append([xi, yi, z_offset])
+    # Build parallelogram grid — alternating rows offset for Miura look
+    for row in range(ny + 1):
+        y = y_base + row * cell_h
+        x_shift = shear * (row % 2)
+        for col in range(nx + 1):
+            x = x_base + side * (col * cell_w + x_shift)
+            # Accordion z: fold up/down alternating columns
+            z = fold_z * (1 if col % 2 == 0 else -1) * (1 if row % 2 == 0 else -1)
+            verts.append([x, y, z])
+
     verts = np.array(verts)
+    faces, mfolds, vfolds = [], [], []
 
-    faces = []
-    for i in range(nx):
-        for j in range(ny):
-            a = i*(ny+1)+j; b = a+1
-            c = (i+1)*(ny+1)+j+1; d = (i+1)*(ny+1)+j
-            faces.append([a,b,c,d])
+    for row in range(ny):
+        for col in range(nx):
+            a = row*(nx+1) + col
+            b = row*(nx+1) + col+1
+            c = (row+1)*(nx+1) + col+1
+            d = (row+1)*(nx+1) + col
+            # Each Miura cell = 2 triangles (angular facets)
+            faces.append([a, b, c])
+            faces.append([a, c, d])
+            # Mountain folds — horizontal crease lines
+            if row % 2 == 0:
+                mfolds.append([verts[a].tolist(), verts[b].tolist()])
+            else:
+                vfolds.append([verts[a].tolist(), verts[b].tolist()])
+            # Valley folds — vertical crease lines
+            if col % 2 == 0:
+                vfolds.append([verts[a].tolist(), verts[d].tolist()])
+            else:
+                mfolds.append([verts[a].tolist(), verts[d].tolist()])
+            # Diagonal Miura crease
+            mfolds.append([verts[b].tolist(), verts[d].tolist()])
 
-    # Mountain folds — horizontal lines
-    mfolds = [[verts[j].tolist(), verts[nx*(ny+1)+j].tolist()] for j in range(1, ny+1, 2)]
-    # Valley folds — vertical lines
-    vfolds = [[verts[i*(ny+1)].tolist(), verts[i*(ny+1)+ny].tolist()] for i in range(1, nx+1, 2)]
-    # Diagonal Miura folds
-    for i in range(0, nx, 2):
-        for j in range(0, ny, 2):
-            a = i*(ny+1)+j; c = (i+1)*(ny+1)+j+1
-            mfolds.append([verts[a].tolist(), verts[c].tolist()])
+    mid_y = y_base + (ny * cell_h) / 2
+    attach = [x_base, mid_y, 0]
+    return verts, faces, mfolds, vfolds, attach, attach
 
-    mid_y = (y_start + y_end) / 2
-    return verts, faces, mfolds, vfolds, [BODY_X*side, mid_y, 0], [BODY_X*side, mid_y, 0]
 
 def build_antenna(index=0, n_total=1):
-    # Antenna on TOP of body
-    r_max=0.8; n_rings=5; n_segs=12; height=0.5
-    x_off  = (index-(n_total-1)/2)*1.4
-    dish_y = BODY_Y + height
-    verts  = []
-    for i in range(n_rings+1):
-        r = r_max*i/n_rings
-        y = dish_y + 0.25*(r/r_max)**2
-        for j in range(n_segs):
-            a = 2*np.pi*j/n_segs
-            verts.append([x_off+r*np.cos(a), y, r*np.sin(a)])
+    """Waterbomb-base origami antenna — angular faceted dish from triangular folds"""
+    n_petals = 8   # number of triangular waterbomb petals
+    r_inner  = 0.15
+    r_outer  = 0.75
+    depth    = 0.35  # how deep the dish folds
+    x_off    = (index - (n_total-1)/2) * 1.6
+    y_base   = BODY_Y + 0.15
+    mast_top = BODY_Y + 0.55
+
+    verts, faces, mfolds, vfolds = [], [], [], []
+
+    # Centre point of dish
+    c_idx = 0
+    verts.append([x_off, mast_top + depth, 0])  # dish centre (deepest point)
+
+    # Inner ring — waterbomb inner fold ring
+    for i in range(n_petals):
+        angle = 2*np.pi*i/n_petals
+        verts.append([x_off + r_inner*np.cos(angle),
+                      mast_top + depth*0.4,
+                      r_inner*np.sin(angle)])
+
+    # Outer ring — dish rim
+    for i in range(n_petals):
+        angle = 2*np.pi*i/n_petals + np.pi/n_petals  # offset = waterbomb twist
+        verts.append([x_off + r_outer*np.cos(angle),
+                      mast_top,
+                      r_outer*np.sin(angle)])
+
     verts = np.array(verts)
-    faces = []
-    for i in range(n_rings):
-        for j in range(n_segs):
-            faces.append([i*n_segs+j, i*n_segs+(j+1)%n_segs,
-                          (i+1)*n_segs+(j+1)%n_segs, (i+1)*n_segs+j])
-    center = [x_off, dish_y, 0]
-    mfolds = [[center, verts[n_rings*n_segs+j].tolist()] for j in range(n_segs)]
-    vfolds = []
-    for i in range(1, n_rings+1, 2):
-        ring = [verts[i*n_segs+j].tolist() for j in range(n_segs)] + [verts[i*n_segs].tolist()]
-        vfolds += [[ring[k], ring[k+1]] for k in range(len(ring)-1)]
-    return verts, faces, mfolds, vfolds, [x_off, BODY_Y, 0], [x_off, dish_y, 0]
+
+    for i in range(n_petals):
+        inner_a = 1 + i
+        inner_b = 1 + (i+1)%n_petals
+        outer_a = 1 + n_petals + i
+        outer_b = 1 + n_petals + (i+1)%n_petals
+
+        # Inner petal triangle (mountain fold)
+        faces.append([0, inner_a, inner_b])
+        mfolds.append([verts[0].tolist(), verts[inner_a].tolist()])
+        mfolds.append([verts[0].tolist(), verts[inner_b].tolist()])
+
+        # Outer petal quad (valley fold)
+        faces.append([inner_a, outer_a, outer_b])
+        faces.append([inner_a, outer_b, inner_b])
+        vfolds.append([verts[inner_a].tolist(), verts[outer_a].tolist()])
+        vfolds.append([verts[outer_a].tolist(), verts[outer_b].tolist()])
+
+    mast_base = [x_off, BODY_Y, 0]
+    mast_tip  = [x_off, mast_top, 0]
+    return verts, faces, mfolds, vfolds, mast_base, mast_tip
+
 
 def build_reflector(index=0, n_total=1):
-    # Reflector at BOTTOM of body
-    size=0.9; depth=0.4; n=8
-    x_off = (index-(n_total-1)/2)*1.5
-    verts = []
-    for xi in np.linspace(-size, size, n):
-        for zi in np.linspace(-size, size, n):
-            y = -BODY_Y - 0.3 - depth*(xi**2+zi**2)/(size**2)
-            verts.append([x_off+xi, y, zi])
+    """Kite-base origami reflector — angular concave bowl from fold triangles"""
+    n_petals = 6
+    r_outer  = 0.8
+    depth    = 0.5
+    x_off    = (index - (n_total-1)/2) * 1.8
+    y_base   = -BODY_Y - 0.15
+    mast_tip = -BODY_Y - 0.45
+
+    verts, faces, mfolds, vfolds = [], [], [], []
+
+    # Tip (deepest point of reflector bowl)
+    verts.append([x_off, mast_tip - depth, 0])  # idx 0
+
+    # Mid ring
+    for i in range(n_petals):
+        angle = 2*np.pi*i/n_petals
+        verts.append([x_off + (r_outer*0.4)*np.cos(angle),
+                      mast_tip - depth*0.3,
+                      (r_outer*0.4)*np.sin(angle)])
+
+    # Rim ring (offset for kite-base twist)
+    for i in range(n_petals):
+        angle = 2*np.pi*i/n_petals + np.pi/n_petals
+        verts.append([x_off + r_outer*np.cos(angle),
+                      y_base,
+                      r_outer*np.sin(angle)])
+
     verts = np.array(verts)
-    faces = []
-    for i in range(n-1):
-        for j in range(n-1):
-            faces.append([i*n+j, i*n+j+1, (i+1)*n+j+1, (i+1)*n+j])
-    mfolds = []
-    for i in range(n):
-        row = [verts[i*n+j].tolist() for j in range(n)]
-        mfolds += [[row[k], row[k+1]] for k in range(len(row)-1)]
-    vfolds = [[verts[i*n+j].tolist(), verts[(i+1)*n+j+1].tolist()]
-              for i in range(n-1) for j in range(n-1) if (i+j)%2==0]
-    return verts, faces, mfolds, vfolds, [x_off, -BODY_Y, 0], [x_off, -BODY_Y-0.3, 0]
+
+    for i in range(n_petals):
+        mid_a = 1 + i
+        mid_b = 1 + (i+1)%n_petals
+        rim_a = 1 + n_petals + i
+        rim_b = 1 + n_petals + (i+1)%n_petals
+
+        faces.append([0, mid_a, mid_b])
+        mfolds.append([verts[0].tolist(), verts[mid_a].tolist()])
+        mfolds.append([verts[mid_a].tolist(), verts[mid_b].tolist()])
+
+        faces.append([mid_a, rim_a, rim_b])
+        faces.append([mid_a, rim_b, mid_b])
+        vfolds.append([verts[mid_a].tolist(), verts[rim_a].tolist()])
+        vfolds.append([verts[rim_a].tolist(), verts[rim_b].tolist()])
+
+    mast_base = [x_off, -BODY_Y, 0]
+    mast_end  = [x_off, mast_tip, 0]
+    return verts, faces, mfolds, vfolds, mast_base, mast_end
+
 
 def build_truss(n_segments=1):
-    # Truss runs vertically (Y axis) along body spine
-    length = BODY_Y * 2 * 1.05
-    radius = 0.10; n_rings = 8*n_segments; n_sides = 6
-    verts=[]; faces=[]; mfolds=[]; vfolds=[]; rings=[]
-    for i in range(n_rings+1):
-        y = (-length/2) + i*(length/n_rings)
-        rot = (np.pi/n_sides)*(i%2); ring=[]
-        for j in range(n_sides):
-            a = 2*np.pi*j/n_sides + rot
-            r = radius + 0.012*(j%2)
-            verts.append([r*np.cos(a), y, r*np.sin(a)])
-            ring.append(len(verts)-1)
-        rings.append(ring)
+    """Yoshimura cylindrical truss — origami tube with diamond crease pattern"""
+    length   = BODY_Y * 2 * 1.08
+    n_rings  = 6 * n_segments
+    n_sides  = 4   # square cross-section for clear diamond pattern
+    r        = 0.09
+
+    verts, faces, mfolds, vfolds, rings = [], [], [], [], []
+
+    for ring in range(n_rings + 1):
+        y = -length/2 + ring*(length/n_rings)
+        rot = (np.pi/n_sides) * (ring % 2)  # alternate rotation = diamond pattern
+        row = []
+        for s in range(n_sides):
+            angle = 2*np.pi*s/n_sides + rot
+            verts.append([r*np.cos(angle), y, r*np.sin(angle)])
+            row.append(len(verts)-1)
+        rings.append(row)
+
     verts = np.array(verts)
-    for i in range(n_rings):
-        r0,r1 = rings[i],rings[i+1]
-        for j in range(n_sides):
-            faces.append([r0[j], r0[(j+1)%n_sides], r1[(j+1)%n_sides], r1[j]])
-            mfolds.append([verts[r0[j]].tolist(), verts[r1[j]].tolist()])
-            vfolds.append([verts[r0[j]].tolist(), verts[r1[(j+1)%n_sides]].tolist()])
+
+    for ring in range(n_rings):
+        r0, r1 = rings[ring], rings[ring+1]
+        for s in range(n_sides):
+            a = r0[s]; b = r0[(s+1)%n_sides]
+            c = r1[(s+1)%n_sides]; d = r1[s]
+            faces.append([a, b, c])
+            faces.append([a, c, d])
+            mfolds.append([verts[a].tolist(), verts[d].tolist()])   # vertical ridge
+            vfolds.append([verts[b].tolist(), verts[d].tolist()])   # diagonal crease
+
     return verts, faces, mfolds, vfolds
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -268,10 +378,10 @@ def render_satellite_png(config):
     BG="#010812"
     fig=plt.figure(figsize=(16,9),facecolor=BG)
 
-    # Left: Front view (shows folds clearly), Right: 3/4 perspective view
+    # Left: perspective showing 3D origami structure, Right: side view standing upright
     views = [
-        (20, -90, "FRONT VIEW — ORIGAMI FOLDS"),
-        (30, -45, "PERSPECTIVE VIEW"),
+        (25, -60, "PERSPECTIVE VIEW"),
+        (5,  -90, "SIDE VIEW — ORIGAMI FOLDS"),
     ]
 
     for idx,(elev,azim,title) in enumerate(views):
@@ -284,57 +394,59 @@ def render_satellite_png(config):
 
         # Draw truss (vertical spine inside body)
         tv,tf,tmf,tvf=build_truss(nt)
-        _draw_poly(ax,tv,tf,"#cc8800",0.4)
-        _draw_folds(ax,tmf,"#ffcc44",lw=0.6)
-        _draw_folds(ax,tvf,"#ffaa00","--",lw=0.5)
+        _draw_poly(ax,tv,tf,"#b87400",0.5)
+        _draw_folds(ax,tmf,"#ffd700",lw=0.7)
+        _draw_folds(ax,tvf,"#ffa500","--",lw=0.5)
 
         # Draw body
-        bv,bf,bfolds=build_body()
-        _draw_poly(ax,bv,bf,"#1a3055",0.75)
-        _draw_folds(ax,bfolds,"#00dcff",lw=1.2)
+        bv,bf,bfolds,bvf=build_body()
+        _draw_poly(ax,bv,bf,"#1a3a60",0.82)
+        _draw_folds(ax,bfolds,"#00dcff",lw=1.4)
+        _draw_folds(ax,bvf,"#00ffcc","--",lw=0.8)
 
         # Draw solar panels (wings left/right)
         lc=(ns+1)//2; rc=ns//2
         for i in range(lc):
             sv,sf,smf,svf,_,_=build_solar_panel(-1,i,lc)
-            _draw_poly(ax,sv,sf,"#1144aa",0.75)
-            _draw_folds(ax,smf,"#00dcff","-",1.4)
-            _draw_folds(ax,svf,"#00ffcc","--",0.9)
+            _draw_poly(ax,sv,sf,"#0d2d6e",0.85)
+            _draw_folds(ax,smf,"#00dcff","-",1.6)
+            _draw_folds(ax,svf,"#00ffcc","--",1.0)
         for i in range(rc):
             sv,sf,smf,svf,_,_=build_solar_panel(+1,i,rc)
-            _draw_poly(ax,sv,sf,"#1144aa",0.75)
-            _draw_folds(ax,smf,"#00dcff","-",1.4)
-            _draw_folds(ax,svf,"#00ffcc","--",0.9)
+            _draw_poly(ax,sv,sf,"#0d2d6e",0.85)
+            _draw_folds(ax,smf,"#00dcff","-",1.6)
+            _draw_folds(ax,svf,"#00ffcc","--",1.0)
 
         # Draw antennas (top of body)
         for i in range(na):
             av,af,amf,avf,mb,mt=build_antenna(i,na)
-            _draw_poly(ax,av,af,"#00cc99",0.6)
-            _draw_folds(ax,amf,"#00ffcc")
+            _draw_poly(ax,av,af,"#006644",0.75)
+            _draw_folds(ax,amf,"#00ffcc",lw=1.2)
             _draw_folds(ax,avf,"#aaffee","--")
             _draw_rod(ax,mb,mt,"#00ffcc",lw=2)
 
         # Draw reflectors (bottom of body)
         for i in range(nr):
             rv,rf,rmf,rvf,cb,cr=build_reflector(i,nr)
-            _draw_poly(ax,rv,rf,"#9944cc",0.6)
-            _draw_folds(ax,rmf,"#dd88ff")
+            _draw_poly(ax,rv,rf,"#5a1a8a",0.75)
+            _draw_folds(ax,rmf,"#dd88ff",lw=1.2)
             _draw_folds(ax,rvf,"#cc66ff","--")
             _draw_rod(ax,cb,cr,"#bb66ff",lw=2)
 
-        # Axis limits — tall standing satellite
-        ax.set_xlim(-5, 5)
-        ax.set_ylim(-3.5, 3.5)
-        ax.set_zlim(-2, 2)
+        # Axis limits — standing satellite, tight fit
+        span_x = BODY_X + 0.55*5 + 0.5
+        ax.set_xlim(-span_x, span_x)
+        ax.set_ylim(-BODY_Y - 1.2, BODY_Y + 1.5)
+        ax.set_zlim(-1.0, 1.0)
 
     from matplotlib.patches import Patch
     from matplotlib.lines   import Line2D
     fig.legend(handles=[
-        Patch(facecolor="#1144aa",edgecolor="#00b4ff",label=f"Solar Panels ({ns})"),
-        Patch(facecolor="#00cc99",edgecolor="#00b4ff",label=f"Antenna ({na})"),
-        Patch(facecolor="#9944cc",edgecolor="#00b4ff",label=f"Reflector ({nr})"),
-        Patch(facecolor="#cc8800",edgecolor="#00b4ff",label=f"Truss ({nt})"),
-        Patch(facecolor="#1a3055",edgecolor="#00b4ff",label="Body"),
+        Patch(facecolor="#0d2d6e",edgecolor="#00b4ff",label=f"Solar Panels ({ns})"),
+        Patch(facecolor="#006644",edgecolor="#00b4ff",label=f"Antenna ({na})"),
+        Patch(facecolor="#5a1a8a",edgecolor="#00b4ff",label=f"Reflector ({nr})"),
+        Patch(facecolor="#b87400",edgecolor="#00b4ff",label=f"Truss ({nt})"),
+        Patch(facecolor="#1a3a60",edgecolor="#00b4ff",label="Body"),
         Line2D([0],[0],color="#00dcff",lw=1.5,label="Mountain Fold"),
         Line2D([0],[0],color="#00ffcc",lw=1.0,ls="--",label="Valley Fold"),
     ],loc="lower center",ncol=7,fontsize=9,frameon=True,bbox_to_anchor=(0.5,0.01),
@@ -350,11 +462,13 @@ def render_satellite_png(config):
 # ══════════════════════════════════════════════════════════════════════════════
 # 3D FOR THREE.JS
 # ══════════════════════════════════════════════════════════════════════════════
-def f2tri(verts,faces):
-    idx=[]
+def f2tri(verts, faces):
+    idx = []
     for f in faces:
-        if len(f)==4: a,b,c,d=f; idx+=[a,b,c,a,c,d]
-        elif len(f)==3: idx+=list(f)
+        if len(f) == 3:
+            idx += list(f)
+        elif len(f) == 4:
+            a,b,c,d = f; idx += [a,b,c, a,c,d]
     return idx
 
 def to3js(verts,faces,mf,vf,color,opacity,lc):
@@ -376,19 +490,19 @@ def build_satellite_3d(config):
     ns=int(config.get("solar_panel",2)); na=int(config.get("antenna",1))
     nr=int(config.get("reflector",1));   nt=int(config.get("truss",1))
     meshes=[]
-    tv,tf,tmf,tvf=build_truss(nt); meshes.append(to3js(tv,tf,tmf,tvf,"#ffaa00",0.5,"#cc8800"))
-    bv,bf,bfolds=build_body();      meshes.append(to3js(bv,bf,bfolds,[],"#2255aa",0.85,"#00dcff"))
+    tv,tf,tmf,tvf=build_truss(nt); meshes.append(to3js(tv,tf,tmf,tvf,"#b87400",0.5,"#ffd700"))
+    bv,bf,bfolds,bvf=build_body(); meshes.append(to3js(bv,bf,bfolds+bvf,[],"#1a3a60",0.85,"#00dcff"))
     lc=(ns+1)//2; rc=ns//2
     for i in range(lc):
-        sv,sf,smf,svf,_,_=build_solar_panel(-1,i,lc); meshes.append(to3js(sv,sf,smf,svf,"#2255cc",0.8,"#00dcff"))
+        sv,sf,smf,svf,_,_=build_solar_panel(-1,i,lc); meshes.append(to3js(sv,sf,smf,svf,"#0d2d6e",0.85,"#00dcff"))
     for i in range(rc):
-        sv,sf,smf,svf,_,_=build_solar_panel(+1,i,rc); meshes.append(to3js(sv,sf,smf,svf,"#2255cc",0.8,"#00dcff"))
+        sv,sf,smf,svf,_,_=build_solar_panel(+1,i,rc); meshes.append(to3js(sv,sf,smf,svf,"#0d2d6e",0.85,"#00dcff"))
     for i in range(na):
         av,af,amf,avf,mb,mt=build_antenna(i,na)
-        meshes.append(to3js(av,af,amf,avf,"#00ffcc",0.7,"#00aa88")); meshes.append(mast3d(mb,mt,"#00ffcc"))
+        meshes.append(to3js(av,af,amf,avf,"#006644",0.75,"#00ffcc")); meshes.append(mast3d(mb,mt,"#00ffcc"))
     for i in range(nr):
         rv,rf,rmf,rvf,cb,cr=build_reflector(i,nr)
-        meshes.append(to3js(rv,rf,rmf,rvf,"#bb66ff",0.7,"#8833cc")); meshes.append(mast3d(cb,cr,"#bb66ff"))
+        meshes.append(to3js(rv,rf,rmf,rvf,"#5a1a8a",0.75,"#dd88ff")); meshes.append(mast3d(cb,cr,"#bb66ff"))
     return meshes
 
 # ══════════════════════════════════════════════════════════════════════════════
