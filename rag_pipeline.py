@@ -1,23 +1,48 @@
 """
-rag_pipeline.py  —  FINAL VERSION
-====================================
-Fixes:
-  - "Flasher fold pattern" now correctly returns Flasher document
-  - "Star fold" returns Star fold document
-  - "Yoshimura" returns Yoshimura document
-  - Short queries like "what is satellite" return overview docs
-  - No hallucination — Ollama only gets relevant context
+rag_pipeline.py  —  CLOUD READY VERSION (DeepSeek API)
+=======================================================
+Retrieval  : BM25 + Topic Exact Match Boost
+Generation : DeepSeek API
 
-Method: BM25 + exact topic name matching boost
+SETUP:
+------
+Local testing:
+  set DEEPSEEK_API_KEY = "sk-xxxx"  directly below
+
+Render cloud deployment:
+  set DEEPSEEK_API_KEY in Render dashboard → Environment Variables
+  code reads it automatically via os.environ
+  never hardcode key in code when pushing to GitHub
+
+Install:
+  pip install requests flask flask-cors torch matplotlib numpy
 """
 
-import json, math, re, os
+import json, math, re, os, requests
 
 KNOWLEDGE_PATH = "knowledge_base.json"
-OLLAMA_MODEL   = "llama3"
 TOP_K          = 4
 K1             = 1.2
 B              = 0.5
+
+# ══════════════════════════════════════════════════════════════════
+# DEEPSEEK API SETTINGS
+# ── For LOCAL testing: paste your key directly below
+# ── For RENDER cloud:  leave as "" and set in Render dashboard
+# ══════════════════════════════════════════════════════════════════
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")   # reads from Render env
+DEEPSEEK_MODEL   = "deepseek-chat"
+DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+
+# ── System prompt ─────────────────────────────────────────────────
+SYSTEM_PROMPT = (
+    "You are an expert in origami engineering for satellite structures. "
+    "Answer using ONLY the context provided below. "
+    "Do not use any outside knowledge. "
+    "If the context does not fully answer the question, say so clearly. "
+    "Be precise, technical, and concise. "
+    "Keep answers under 100 words unless more detail is needed."
+)
 
 STOPWORDS = {
     "the","a","an","and","or","but","in","on","at","to","for","of","with",
@@ -30,7 +55,6 @@ STOPWORDS = {
     "give","show","explain","describe","define"
 }
 
-# Query expansion for short/vague queries
 QUERY_EXPAND = {
     "satellite":     "satellite spacecraft orbit types overview",
     "satellites":    "satellite spacecraft orbit types overview",
@@ -81,25 +105,13 @@ def expand_query(query):
     return expanded
 
 def topic_similarity(query_tokens, topic):
-    """
-    How closely does the query match the document topic name?
-    Returns a boost score — higher = better topic match.
-    """
-    topic_tokens = set(tokenize(topic))
-    query_set    = set(query_tokens)
-
+    topic_tokens  = set(tokenize(topic))
+    query_set     = set(query_tokens)
     if not topic_tokens:
         return 0.0
-
-    # How many query words appear in topic
-    overlap = len(topic_tokens & query_set)
-
-    # Extra boost if ALL topic words are in query
-    full_match = 1.0 if topic_tokens.issubset(query_set) else 0.0
-
-    # Extra boost if query is mostly about this topic
+    overlap        = len(topic_tokens & query_set)
+    full_match     = 1.0 if topic_tokens.issubset(query_set) else 0.0
     query_coverage = overlap / max(len(query_set), 1)
-
     return overlap * 3.0 + full_match * 10.0 + query_coverage * 5.0
 
 
@@ -117,7 +129,6 @@ class BM25Index:
     def _build(self):
         self.tokenized = []
         for doc in self.docs:
-            # Topic repeated 3x — strong topic signal
             topic_tokens = tokenize(doc.get("topic", "")) * 3
             text_tokens  = tokenize(doc["text"])
             self.tokenized.append(topic_tokens + text_tokens)
@@ -148,27 +159,19 @@ class BM25Index:
             self.vectors.append(vec)
 
     def search(self, query, top_k=TOP_K):
-        # Step 1 — expand short queries
-        expanded    = expand_query(query)
-        qtoks       = tokenize(expanded)
-        orig_qtoks  = tokenize(query)   # original query for topic matching
-
+        expanded   = expand_query(query)
+        qtoks      = tokenize(expanded)
+        orig_qtoks = tokenize(query)
         if not qtoks:
             return []
 
         scores = []
         for i, vec in enumerate(self.vectors):
-            # BM25 text score
-            bm25_score = sum(vec.get(w, 0) for w in qtoks)
-
-            # Topic exact match boost — this fixes "Flasher fold pattern"
+            bm25_score  = sum(vec.get(w, 0) for w in qtoks)
             topic_boost = topic_similarity(orig_qtoks, self.topics[i])
-
-            total = bm25_score + topic_boost
-            scores.append((total, i))
+            scores.append((bm25_score + topic_boost, i))
 
         scores.sort(reverse=True)
-
         results = []
         for score, i in scores[:top_k]:
             if score < 0.01:
@@ -183,44 +186,59 @@ class BM25Index:
 
 
 # ══════════════════════════════════════════════════════════════════
-# OLLAMA
+# DEEPSEEK ANSWERER
 # ══════════════════════════════════════════════════════════════════
 
-SYSTEM = (
-    "You are an expert in origami engineering for satellite structures. "
-    "Answer using ONLY the context provided below. "
-    "Do not use any outside knowledge. "
-    "If the context does not fully answer the question, say so clearly. "
-    "Be precise, technical, and concise."
-)
+def ask_deepseek(question, chunks):
+    """
+    Sends retrieved chunks as context to DeepSeek API.
+    DeepSeek reads the context and writes a real intelligent answer.
+    """
+    if not DEEPSEEK_API_KEY:
+        print("[DeepSeek] ERROR: No API key found.")
+        print("[DeepSeek] Set DEEPSEEK_API_KEY in Render dashboard")
+        print("[DeepSeek] or paste directly: DEEPSEEK_API_KEY = 'sk-xxx'")
+        return None
 
-def ask_ollama(question, chunks):
     context = "\n\n".join(
         f"[Source {i+1} — {c['topic']}]\n{c['text']}"
         for i, c in enumerate(chunks)
     )
-    prompt = (
-        f"{SYSTEM}\n\n"
+    user_message = (
         f"### CONTEXT\n{context}\n\n"
         f"### QUESTION\n{question}\n\n"
         f"### ANSWER"
     )
+
     try:
-        import requests
         resp = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
-            timeout=60
+            DEEPSEEK_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type":  "application/json"
+            },
+            json={
+                "model":    DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_message}
+                ],
+                "max_tokens":  300,
+                "temperature": 0.3
+            },
+            timeout=30
         )
         if resp.status_code == 200:
-            return resp.json().get("response", "").strip()
-    except Exception:
-        pass
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        else:
+            print(f"[DeepSeek] Error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"[DeepSeek] Request failed: {e}")
     return None
 
 
 # ══════════════════════════════════════════════════════════════════
-# RAG PIPELINE  — used by step9_backend.py
+# RAG PIPELINE
 # ══════════════════════════════════════════════════════════════════
 
 class RAGPipeline:
@@ -235,7 +253,16 @@ class RAGPipeline:
             self.docs = json.load(f)
 
         self.index = BM25Index(self.docs)
-        print(f"[RAG] Ready — {len(self.docs)} documents indexed")
+
+        # Check API key on startup
+        if DEEPSEEK_API_KEY:
+            print(f"[RAG] Ready — {len(self.docs)} documents indexed")
+            print(f"[RAG] Generator : DeepSeek API ({DEEPSEEK_MODEL})")
+            print(f"[RAG] API Key   : {DEEPSEEK_API_KEY[:8]}••••••••••••")
+        else:
+            print(f"[RAG] Ready — {len(self.docs)} documents indexed")
+            print(f"[RAG] WARNING: No DeepSeek API key found!")
+            print(f"[RAG] Set DEEPSEEK_API_KEY in Render environment variables")
 
     def retrieve(self, query, top_k=TOP_K):
         return self.index.search(query, top_k=top_k)
@@ -247,12 +274,13 @@ class RAGPipeline:
         if not chunks:
             return "I don't have information about that in my knowledge base.", []
 
-        # Try Ollama
-        ollama_answer = ask_ollama(question, chunks)
-        if ollama_answer:
-            return ollama_answer, chunks
+        # Ask DeepSeek
+        response = ask_deepseek(question, chunks)
 
-        # Fallback — return best chunk directly
+        if response:
+            return response, chunks
+
+        # Fallback — return best chunk text if API fails
         best = chunks[0]
         return f"[{best['topic']}]\n\n{best['text']}", chunks
 
@@ -264,35 +292,32 @@ class RAGPipeline:
 def run_test(rag):
     print()
     print("=" * 65)
-    print("  RETRIEVAL TEST")
+    print("  RETRIEVAL TEST  (BM25 only — no API calls)")
     print("=" * 65)
 
     tests = [
-        # Exact topic name queries — must return that exact document
-        ("Flasher fold pattern",                      "Flasher fold"),
-        ("Yoshimura pattern",                         "Yoshimura"),
-        ("Waterbomb base",                            "Waterbomb"),
-        ("Kresling pattern",                          "Kresling"),
-        ("Miura-ori fold",                            "Miura-ori"),
-        ("Star fold pattern",                         "Star fold"),
-        # Short vague queries — must return relevant overview
-        ("what is satellite",                         "satellite"),
-        ("what is origami",                           "origami"),
-        # Specific domain queries
-        ("ETH Zurich CVAE model",                     "CVAE"),
-        ("JWST sunshield origami",                    "Webb"),
-        ("IKAROS solar sail",                         "IKAROS"),
-        ("shape memory alloy hinge",                  "memory alloy"),
-        ("CubeSat deployable solar panel",            "CubeSat"),
-        ("communication satellite antenna",           "communication"),
+        ("Flasher fold pattern",            "Flasher fold"),
+        ("Yoshimura pattern",               "Yoshimura"),
+        ("Waterbomb base",                  "Waterbomb"),
+        ("Kresling pattern",                "Kresling"),
+        ("Miura-ori fold",                  "Miura-ori"),
+        ("Star fold pattern",               "Star fold"),
+        ("what is satellite",               "satellite"),
+        ("what is origami",                 "origami"),
+        ("ETH Zurich CVAE model",           "CVAE"),
+        ("JWST sunshield origami",          "Webb"),
+        ("IKAROS solar sail",               "IKAROS"),
+        ("shape memory alloy hinge",        "memory alloy"),
+        ("CubeSat deployable solar panel",  "CubeSat"),
+        ("communication satellite antenna", "communication"),
     ]
 
     passed = 0
     for question, must_contain in tests:
         results = rag.retrieve(question, top_k=1)
         if results:
-            topic = results[0]["topic"]
-            ok    = must_contain.lower() in topic.lower()
+            topic  = results[0]["topic"]
+            ok     = must_contain.lower() in topic.lower()
             if ok: passed += 1
             status = "PASS ✓" if ok else "FAIL ✗"
             print(f"  {status}  [{results[0]['score']:5.2f}]  {topic}")
@@ -312,9 +337,9 @@ def run_test(rag):
 def main():
     print()
     print("=" * 65)
-    print("  ORIGAMI SATELLITE RAG  —  Final Version")
-    print("  Retrieval : BM25 + Topic Exact Match Boost")
-    print("  Generator : Ollama llama3 (if running)")
+    print("  ORIGAMI SATELLITE RAG  —  DeepSeek Cloud Version")
+    print("  Retrieval  : BM25 + Topic Exact Match Boost")
+    print("  Generator  : DeepSeek API")
     print("=" * 65)
 
     rag = RAGPipeline()
